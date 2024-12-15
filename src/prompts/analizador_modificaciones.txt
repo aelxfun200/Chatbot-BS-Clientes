@@ -1,0 +1,19 @@
+Analiza esta conversación entre un propietario de restaurante y un chatbot experto en ingeniería de menús de restaurantes.
+
+El usuario puede estar sugiriendo modificaciones sobre cómo debe comportarse o querer seguir probando el bot sin añadir ninguna otra modificación.
+
+Detecta si hay alguna sugerencia de modificación y extrae la información en formato JSON:
+{
+    "is_modification": boolean,
+    "modification_type": "comportamiento" | "flujo" | "respuestas" | "otro",
+    "description": "Descripción detallada de la modificación sugerida",
+    "severity": "alta" | "media" | "baja",
+    "implementation_notes": "Notas sobre cómo implementar el cambio"
+}
+
+Si no hay modificación sugerida, responde con "is_modification": false y los demás campos null.
+Responde SOLO con el JSON, sin explicaciones adicionales.
+
+Ten en cuenta que el usuario puede decir por ejemplo:
+"quiero una nueva ingeniería de menús"
+Esto no implica una modificación.
