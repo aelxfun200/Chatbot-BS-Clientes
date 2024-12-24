@@ -1,232 +1,202 @@
-import { addKeyword, EVENTS } from '@builderbot/bot';
-import { OpenAI } from 'openai';
-import { readFileSync, appendFileSync, writeFileSync, existsSync, mkdirSync, createReadStream } from 'fs';
-import { join } from 'path';
-import { format } from 'date-fns';
-import dotenv from 'dotenv';
-import { log } from 'console';
-import { toAsk } from "@builderbot-plugins/openai-assistants";
+import { addKeyword } from '@builderbot/bot'
+import { OpenAI } from 'openai'
+import dotenv from 'dotenv'
+import { DynamoDBService } from '../services/dynamodb.js'
+import { createReadStream } from 'fs'
 
+// Inicializar variables de entorno
+dotenv.config()
 
+// Inicializar OpenAI
+const apiKey = process.env.OPENAI_API_KEY
+const openai = new OpenAI({ apiKey })
 
-// Initialize environment variables
-dotenv.config();
-// Initialize OpenAI
-const apiKey = process.env.OPENAI_API_KEY;
-const openai = new OpenAI({ apiKey });
+// Inicializar el servicio de DynamoDB
+const dynamoService = new DynamoDBService()
 
-// File paths
-const DATA_DIR = join(process.cwd(), 'data');
-const MODIFICATIONS_FILE = join(DATA_DIR, 'modifications.txt');
-const HISTORY_FILE = join(DATA_DIR, 'history.txt');
-const PROMPT_FILE = join(DATA_DIR, 'current_prompt.txt');
-const HISTORY_PROMPT_FILE = join(DATA_DIR, 'history_prompt.txt');
+// Constantes
+// NOTA: Para que funcione correctamente con addKeyword,
+// se recomienda un arreglo con la expresión regular.
+const REGEX_ANY_CHARACTER = [/^.+$/]
 
-
-// Prompts paths
-const PROMPT_DIR = join(process.cwd(), 'src/prompts');
-const MODIFICATION_PROMPT_DIR = join(PROMPT_DIR, 'analizador_modificaciones.txt');
-const NEXT_ITERATION_PROMPT = join(PROMPT_DIR, 'next_iteration_prompt.txt');
-
-// Audio paths
-const AUDIO_DIR = join(process.cwd(), 'voice_notes');
-
-// Constants
-const REGEX_ANY_CHARACTER = '/^.+$/';
-
-
-// Enhanced logging function
+// Función mejorada de logging
 const logInfo = (context, message, data = null) => {
-    const timestamp = new Date().toISOString();
-    console.log(`\n[${timestamp}] [${context}]`);
-    console.log(`Message: ${message}`);
+    const timestamp = new Date().toISOString()
+    console.log(`\n[${timestamp}] [${context}]`)
+    console.log(`Mensaje: ${message}`)
     if (data) {
-        console.log('Data:', JSON.stringify(data, null, 2));
+        console.log('Datos:', JSON.stringify(data, null, 2))
     }
-    console.log('-'.repeat(80));
-};
+    console.log('-'.repeat(80))
+}
 
-
-// Function to obtain the prompt required
-
-const getPrompt = async (requested_prompt) => {
-    try {
-        const text = readFileSync(requested_prompt, 'utf-8')
-        logInfo(text);
-
-        return text;
-    } catch (error) {
-        console.error('Error al leer el prompt:', error);
-        return null;
-    }
-};
-
-
-// Function to process audio messages
+// Función para procesar mensajes de audio
 const processAudioMessage = async (ctx, provider) => {
     try {
-        const localPath = await provider.saveFile(ctx, { path: AUDIO_DIR });
-        console.log('Ruta del archivo de audio local:', localPath);
+        const localPath = await provider.saveFile(ctx, { path: 'voice_notes' })
+        console.log('Ruta local del archivo de audio:', localPath)
 
-        // Leer el archivo de audio
-        const audioData = createReadStream(localPath);
-
-        // Transcribir el audio usando OpenAI
+        const audioData = createReadStream(localPath)
         const transcribeResponse = await openai.audio.transcriptions.create({
             file: audioData,
             model: 'whisper-1',
-        });
-        const transcription = transcribeResponse.text;
-        console.log('Respuesta del asistente de OpenAI:', transcription);
-
-        return transcription;
-
+        })
+        
+        return transcribeResponse.text
     } catch (error) {
-        logInfo('processAudioMessage', 'Error processing audio message', { error: error.message });
-        return null;
+        logInfo('processAudioMessage', 'Error al procesar el mensaje de audio', { error: error.message })
+        return null
     }
-};
+}
 
 // Función auxiliar para manejar mensajes (texto o voz)
 const handleMessage = async (ctx, provider) => {
-    
-    // Si es un mensaje de voz
     if (ctx.message?.audioMessage || ctx.message?.messageContextInfo?.messageContent?.audioMessage) {
         try {
-            const transcript = processAudioMessage(ctx, provider);
-            return transcript;
+            const transcript = await processAudioMessage(ctx, provider)
+            return transcript
         } catch (error) {
-            console.error('Error procesando audio:', error);
-            return null;
+            console.error('Error al procesar el audio:', error)
+            return null
         }
     }
-    // Si es un mensaje de texto
-    return ctx.body;
-};
+    return ctx.body
+}
 
-// Function to generate new prompt based on modifications
+// Función para generar un nuevo prompt basado en modificaciones
 const generateNewPrompt = async (modifications) => {
     try {
-        const currentPrompt = readFileSync(PROMPT_FILE, 'utf-8');
+        const currentPrompt = await dynamoService.getPrompt()
+
+        // Convertimos la lista de modificaciones en un texto
+        // Útil si deseas mostrar "Tipo: x, Descripción: y", etc.
+        const modificationsText = modifications
+            .map(m => `Tipo: ${m.modification_type}\nDescripción: ${m.description}`)
+            .join('\n\n')
 
         const completion = await openai.chat.completions.create({
-            model: "gpt-4o-mini",
+            model: 'gpt-4',
             messages: [
                 {
-                    role: "system",
-                    content: "You are an AI that improves chatbot prompts based on user feedback and modifications."
+                    role: 'system',
+                    content: 'Eres una IA que mejora los prompts de chatbots basándose en el feedback y modificaciones de los usuarios.'
                 },
                 {
-                    role: "user",
-                    content: `Current prompt:\n${currentPrompt}\n\nModifications to incorporate:\n${modifications.join('\n')}\n\nCreate an improved prompt that incorporates these modifications while maintaining the core functionality.`
+                    role: 'user',
+                    content: `Prompt actual:\n${currentPrompt}\n\nModificaciones a incorporar:\n${modificationsText}\n\nCrea un prompt mejorado que incorpore estas modificaciones manteniendo la funcionalidad principal.Importante siempre al final del prompt añade esta frase-     Estos son los datos actualizados al día de hoy del restaurante:`
                 }
             ],
             temperature: 0.7
-        });
+        })
 
-        const newPrompt = completion.choices[0].message.content;
-        writeFileSync(PROMPT_FILE, ''); // clear previous prompt
-        appendFileSync(PROMPT_FILE, newPrompt);
-        appendFileSync(HISTORY_PROMPT_FILE, newPrompt);
-        writeFileSync(MODIFICATIONS_FILE, ''); // Clear modifications
+        const newPrompt = completion.choices[0].message.content
+        await dynamoService.updatePrompt(newPrompt)
 
-        logInfo('generateNewPrompt', 'Generated new prompt', { newPrompt });
-        return newPrompt;
+        logInfo('generateNewPrompt', 'Nuevo prompt generado', { newPrompt })
+        return newPrompt
     } catch (error) {
-        logInfo('generateNewPrompt', 'Error generating new prompt', { error: error.message });
-        return null;
+        logInfo('generateNewPrompt', 'Error al generar el nuevo prompt', { error: error.message })
+        return null
     }
-};
+}
 
-// Function to analyze conversation for modifications
+// Función para analizar la conversación en busca de modificaciones
 const analyzeForModifications = async (conversation) => {
     try {
-        logInfo('analyzeForModifications', 'Analyzing conversation for modifications');
+        logInfo('analyzeForModifications', 'Analizando la conversación para modificaciones')
 
-        const text_prompt = await getPrompt(MODIFICATION_PROMPT_DIR);
-        const prompt = `\nConversación: ${conversation.map(msg => `${msg.role}: ${msg.content}`).join('\n')}${text_prompt}`; // Combina text_prompt y la conversación
+        // Convertimos la conversación en un string
+        const conversationText = conversation
+            .map(msg => `${msg.role}: ${msg.content}`)
+            .join('\n')
+
+        // Instrucciones específicas para que OpenAI devuelva JSON válido
+        const prompt = `\nConversación:\n${conversationText}\n\nPor favor, analiza la conversación anterior y determina si hay sugerencias para mejorar el chatbot. Responde exclusivamente con un objeto JSON que contenga las siguientes propiedades: 'is_modification' (booleano). Si 'is_modification' es verdadero, incluye también 'modification_type' (cadena) y 'description' (cadena). No incluyas ningún otro texto.`
 
         const completion = await openai.chat.completions.create({
-            model: "gpt-4o-mini",
+            model: 'gpt-4',
             messages: [
-                { role: "system", content: prompt },
-                { role: "user", content: conversation[conversation.length - 1].content }
+                { role: 'system', content: prompt },
+                { role: 'user', content: conversation[conversation.length - 1].content }
             ],
             temperature: 0.3
-        });
+        })
 
-        return JSON.parse(completion.choices[0].message.content);
+        const responseContent = completion.choices[0].message.content.trim()
+        logInfo('analyzeForModifications', 'Respuesta de la IA', { responseContent })
+
+        return JSON.parse(responseContent)
     } catch (error) {
-        logInfo('analyzeForModifications', 'Error analyzing modifications', { error: error.message });
-        return { is_modification: false };
+        logInfo('analyzeForModifications', 'Error al analizar modificaciones', { error: error.message })
+        // Si hay error, retornamos por defecto que no hay modificación
+        return { is_modification: false }
     }
-};
+}
 
-// Function to save modification
+// Función para guardar una modificación
+// Nota: la lógica para generar un nuevo prompt y limpiar las modificaciones
+// se realiza aquí, luego de guardar la modificación.
 const saveModification = async (modification) => {
-    const timestamp = format(new Date(), 'yyyy-MM-dd HH:mm:ss');
-    const entry = `[${timestamp}] ${JSON.stringify(modification)}\n`;
+    // Guardamos la nueva modificación
+    await dynamoService.saveModification(modification)
 
-    appendFileSync(MODIFICATIONS_FILE, entry);
-    appendFileSync(HISTORY_FILE, entry);
+    // Obtenemos la lista actualizada de modificaciones
+    const modifications = await dynamoService.getModifications()
 
-    const modifications = readFileSync(MODIFICATIONS_FILE, 'utf-8').split('\n').filter(Boolean);
+    // Si hay 3 o más, generamos el nuevo prompt y limpiamos las modificaciones
     if (modifications.length >= 3) {
-        await generateNewPrompt(modifications);
+        await generateNewPrompt(modifications)
+        // Limpiar la lista de modificaciones en DynamoDB
+        await dynamoService.clearModifications()
     }
-};
+}
 
-// Function to generate conversation response
+// Función para generar la siguiente interacción en la conversación
 const getNextInteraction = async (conversation) => {
     try {
-        logInfo('getNextInteraction', 'Getting next bot response');
+        logInfo('getNextInteraction', 'Obteniendo la siguiente respuesta del bot')
 
-        const basePrompt = readFileSync(PROMPT_FILE, 'utf-8');
-        const text_prompt = await getPrompt(NEXT_ITERATION_PROMPT);
-        const prompt = `${basePrompt}${text_prompt}\nHistorial de la conversación: ${conversation.map(msg => `${msg.role}: ${msg.content}`).join('\n')}`; // Combina text_prompt y la conversación
+        const basePrompt = await dynamoService.getPrompt()
+        const conversationHistory = conversation
+            .map(msg => `${msg.role}: ${msg.content}`)
+            .join('\n')
+
+        const prompt = `${basePrompt}\nHistorial de la conversación:\n${conversationHistory}`
 
         const completion = await openai.chat.completions.create({
-            model: "gpt-4o-mini",
+            model: 'gpt-4',
             messages: [
-                { role: "system", content: prompt },
+                { role: 'system', content: prompt },
                 ...conversation
             ],
             temperature: 0.7
-        });
+        })
 
-        return completion.choices[0].message.content;
+        return completion.choices[0].message.content
     } catch (error) {
-        logInfo('getNextInteraction', 'Error getting response', { error: error.message });
-        return "Lo siento, ha ocurrido un error. ¿Podrías repetir tu mensaje?";
+        logInfo('getNextInteraction', 'Error al obtener la respuesta', { error: error.message })
+        return 'Lo siento, ha ocurrido un error. ¿Podrías repetir tu mensaje?'
     }
-};
-
-// Asegúrate de que el directorio existe
-if (!existsSync(AUDIO_DIR)) {
-    mkdirSync(AUDIO_DIR, { recursive: true });
-    console.log(`Directorio creado: ${AUDIO_DIR}`);
 }
 
-// Main flow export
+// Exportación principal del flujo
 export const flowTraining = addKeyword(REGEX_ANY_CHARACTER, { regex: true })
     .addAction(async (ctx, { flowDynamic, state, provider }) => {
         try {
-            //const message = ctx.body;
-            let isInTraining = state.get('isInTraining');
-
-            const message = await handleMessage(ctx, provider);
+            // Verificamos si ya estamos en modo de entrenamiento
+            let isInTraining = state.get('isInTraining')
+            const message = await handleMessage(ctx, provider)
 
             if (!message) {
-                await flowDynamic('Hubo un error al procesar el mensaje. Por favor, intenta nuevamente.');
-                return;
+                await flowDynamic('Hubo un error al procesar el mensaje. Por favor, intenta nuevamente.')
+                return
             }
 
-            //console.log('+'.repeat(50) + message);
-
-            // Check if starting training
+            // Verificar si se está iniciando el entrenamiento
             if (!isInTraining) {
                 if (message.toLowerCase() === 'entrenar') {
-                    await state.update({ isInTraining: true });
+                    // Activamos el modo de entrenamiento y reiniciamos la conversación en memoria
+                    await state.update({ isInTraining: true, conversation: [] })
                     await flowDynamic([
                         '🤖 *Modo de Entrenamiento Iniciado*',
                         '',
@@ -234,61 +204,65 @@ export const flowTraining = addKeyword(REGEX_ANY_CHARACTER, { regex: true })
                         'Para salir, simplemente escribe "salir".',
                         '',
                         '¿En qué puedo ayudarte?'
-                    ]);
-                    return;
+                    ])
+                    return
                 }
-                return false; // Not in training, allow other flows
+                // Si no entra la palabra clave "entrenar", no estamos en entrenamiento
+                return false
             }
 
-            // Check for exit command
+            // Verificar comando de salida
             if (message.toLowerCase() === 'salir') {
                 await flowDynamic([
                     '✅ Entrenamiento finalizado.',
                     'Todas las modificaciones han sido guardadas.',
                     '¡Hasta pronto!'
-                ]);
-                await state.clear();
-                return;
+                ])
+                // Limpiamos todo el estado (modo de entrenamiento y conversación)
+                await state.clear()
+                return
             }
 
-            // Get or initialize conversation context
-            let conversation = state.get('conversation') || [];
-            conversation.push({ role: 'user', content: message });
+            // Obtener o inicializar el contexto de la conversación
+            let conversation = state.get('conversation') || []
+            conversation.push({ role: 'user', content: message })
 
-            // Analyze for modifications
-            const analysis = await analyzeForModifications(conversation);
+            // Analizar la conversación para modificaciones
+            const analysis = await analyzeForModifications(conversation)
 
             if (analysis.is_modification) {
-                logInfo('flowTraining', 'Modification detected', analysis);
-                await saveModification(analysis);
+                logInfo('flowTraining', 'Modificación detectada', analysis)
+                await saveModification(analysis)
 
                 await flowDynamic([
                     '✅ He detectado una sugerencia de modificación:',
-                    `Tipo: ${analysis.modification_type}`,
-                    `Descripción: ${analysis.description}`,
+                    `**Tipo:** ${analysis.modification_type}`,
+                    `**Descripción:** ${analysis.description}`,
                     '',
                     'La modificación ha sido registrada. ¿Hay algo más en lo que pueda ayudarte?'
-                ]);
+                ])
 
+                // Añadimos la respuesta del bot al estado de la conversación
                 conversation.push({
                     role: 'assistant',
                     content: `Modificación registrada: ${analysis.description}`
-                });
+                })
 
-                return;
+                // Actualizar el estado de la conversación
+                await state.update({ conversation })
+                return
             } else {
-                // Normal conversation flow
-                const response = await getNextInteraction(conversation);
-                await flowDynamic(response);
-                conversation.push({ role: 'assistant', content: response });
+                // Flujo normal de conversación
+                const response = await getNextInteraction(conversation)
+                await flowDynamic(response)
+                conversation.push({ role: 'assistant', content: response })
             }
 
-            // Update conversation state
-            await state.update({ conversation });
+            // Actualizar el estado de la conversación
+            await state.update({ conversation })
 
         } catch (error) {
-            logInfo('flowTraining', 'Error in flow', { error: error.message });
-            await flowDynamic('Ha ocurrido un error. Por favor, intenta de nuevo.');
+            logInfo('flowTraining', 'Error en el flujo', { error: error.message })
+            await flowDynamic('Ha ocurrido un error. Por favor, intenta de nuevo.')
         }
-    });
-
+    })

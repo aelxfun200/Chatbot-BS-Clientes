@@ -11,6 +11,8 @@
   },
   "keywords": [],
   "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.716.0",
+    "@aws-sdk/lib-dynamodb": "^3.716.0",
     "@builderbot-plugins/openai-assistants": "^0.0.2",
     "@builderbot/bot": "^1.2.2",
     "@builderbot/provider-baileys": "^1.2.2",
